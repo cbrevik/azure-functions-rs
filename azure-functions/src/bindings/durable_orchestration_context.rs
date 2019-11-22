@@ -1,7 +1,7 @@
 use crate::{
     durable::{
-        Action, ActionFuture, EventType, HistoryEvent, JoinAll, OrchestrationFuture,
-        OrchestrationState, RetryOptions, SelectAll,
+        Action, ActionFuture, EventType, HistoryEvent, HttpRequest, HttpResponse, JoinAll,
+        OrchestrationFuture, OrchestrationState, RetryOptions, SelectAll,
     },
     rpc::{typed_data::Data, TypedData},
 };
@@ -69,7 +69,7 @@ pub struct DurableOrchestrationContext {
 impl DurableOrchestrationContext {
     #[doc(hidden)]
     pub fn new(data: TypedData, _metadata: HashMap<String, TypedData>) -> Self {
-        #[derive(Deserialize)]
+        #[derive(Deserialize, Debug)]
         #[serde(rename_all = "camelCase")]
         struct BindingData {
             instance_id: String,
@@ -82,6 +82,8 @@ impl DurableOrchestrationContext {
             Some(Data::String(s)) => {
                 let data: BindingData =
                     from_str(s).expect("failed to parse orchestration context data");
+
+                println!("{:#?}", data);
 
                 Self {
                     instance_id: data.instance_id,
@@ -318,6 +320,77 @@ impl DurableOrchestrationContext {
         ActionFuture::new(input, self.state.clone(), event_index)
     }
 
+    /// Calls an operation on an entity and waits on the operation to complete.
+    pub async fn call_entity<S, D>(
+        &self,
+        entity_type: &str,
+        entity_key: &str,
+        operation: S,
+        input: D,
+    ) -> ActionFuture<Result<Value, String>>
+    where
+        S: Into<String>,
+        D: Into<Value>,
+    {
+        let mut state = self.state.borrow_mut();
+
+        let id = Self::format_entity_id(entity_type, entity_key);
+
+        state.push_action(Action::CallEntity {
+            instance_id: id.clone(),
+            operation: operation.into(),
+            input: input.into(),
+        });
+
+        let mut result: Option<Result<Value, String>> = None;
+        let mut event_index = None;
+
+        if let Some((idx, scheduled)) = state.find_start_event(&id, EventType::EventSent) {
+            scheduled.is_processed = true;
+
+            if let Some((idx, finished)) = state.find_end_event(idx, EventType::EventRaised, None) {
+                finished.is_processed = true;
+                event_index = Some(idx);
+
+                result = Some(Ok(finished
+                    .result
+                    .as_ref()
+                    .map(|s| from_str(&s).unwrap_or_default())
+                    .unwrap_or_default()));
+            }
+        }
+
+        ActionFuture::new(result, self.state.clone(), event_index)
+    }
+
+    /// Signals an entity to perform an operation without waiting for a response.
+    pub fn signal_entity<S, D>(&self, entity_type: &str, entity_key: &str, operation: S, input: D)
+    where
+        S: Into<String>,
+        D: Into<Value>,
+    {
+        unimplemented!()
+    }
+
+    /// Determines whether the current context is locked, and if so, what locks are currently owned.
+    pub fn is_locked(&self) -> (bool, ()) {
+        unimplemented!()
+    }
+
+    /// Acquires one or more locks for the specified entities.
+    pub async fn lock(&self) -> Result<(), String> {
+        unimplemented!()
+    }
+
+    /// Calls an HTTP endpoint using the information in the given request.
+    pub async fn call_http(&self, req: HttpRequest) -> ActionFuture<Result<HttpResponse, String>> {
+        unimplemented!()
+    }
+
+    // pub fn start_new_orchestration(&self, name: &str, input: D, instance_id: Option<String>) {
+
+    // }
+
     fn perform_call_action(
         &self,
         action: Action,
@@ -357,6 +430,10 @@ impl DurableOrchestrationContext {
         }
 
         ActionFuture::new(result, self.state.clone(), event_index)
+    }
+
+    fn format_entity_id(entity_type: &str, entity_key: &str) -> String {
+        format!("@{}@{}", entity_type.to_lowercase(), entity_key)
     }
 }
 

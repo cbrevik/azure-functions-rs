@@ -483,6 +483,85 @@ impl Client {
             ))),
         }
     }
+
+    /// Sends a one-way operation message to a Durable Entity.
+    ///
+    /// If the entity doesn't exist, it will be created automatically.
+    pub async fn signal_entity<D>(
+        &self,
+        entity_type: &str,
+        entity_key: &str,
+        operation: Option<&str>,
+        content: D,
+    ) -> Result<()>
+    where
+        D: Into<Value>,
+    {
+        let req = Request::builder()
+            .method("POST")
+            .uri(
+                self.endpoint
+                    .signal_entity_url(entity_type, entity_key, operation)
+                    .into_string(),
+            )
+            .header("Content-Type", "application/json")
+            .body(Body::from(to_string(&content.into()).unwrap()))
+            .unwrap();
+
+        match self.client.request(req).await {
+            Ok(res) => match res.status() {
+                StatusCode::ACCEPTED => Ok(()),
+                StatusCode::NOT_FOUND => Err(ClientError::EntityNotFound),
+                StatusCode::BAD_REQUEST => Err(ClientError::BadRequest),
+                _ => unreachable!("unexpected response from server"),
+            },
+            Err(e) => Err(ClientError::Message(format!(
+                "failed to send request: {}",
+                e
+            ))),
+        }
+    }
+
+    /// Query the state of the specified entity.
+    pub async fn query_entity(&self, entity_type: &str, entity_key: &str) -> Result<Value> {
+        let req = Request::builder()
+            .method("GET")
+            .uri(
+                self.endpoint
+                    .query_entity_url(entity_type, entity_key)
+                    .into_string(),
+            )
+            .body(Body::empty())
+            .unwrap();
+
+        match self.client.request(req).await {
+            Ok(res) => match res.status() {
+                StatusCode::OK => {
+                    let body = res.into_body().try_concat().await;
+                    body.map(|b| {
+                        from_slice(&b).map_err(|e| {
+                            ClientError::Message(format!(
+                                "failed to deserialize entity data: {}",
+                                e
+                            ))
+                        })
+                    })
+                    .unwrap_or_else(|e| {
+                        Err(ClientError::Message(format!(
+                            "failed to read response: {}",
+                            e
+                        )))
+                    })
+                }
+                StatusCode::NOT_FOUND => Err(ClientError::EntityNotFound),
+                _ => unreachable!("unexpected response from server"),
+            },
+            Err(e) => Err(ClientError::Message(format!(
+                "failed to send request: {}",
+                e
+            ))),
+        }
+    }
 }
 
 #[cfg(test)]
